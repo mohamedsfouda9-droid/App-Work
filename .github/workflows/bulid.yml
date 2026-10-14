@@ -18,7 +18,7 @@ jobs:
       - name: Download repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,13 +27,21 @@ jobs:
       - name: Find and extract project ZIP
         shell: bash
         run: |
-          ZIP_FILE="$(find . -maxdepth 3 -type f -iname 'Mogamaa_AlMohadarat_Android_Starter_v3_Cat_Assets.zip' -print -quit)"
+          set -e
+
+          ZIP_FILE="$(find . -path './.git' -prune -o -type f -iname 'Mogamaa_AlMohadarat_Android_Starter_v3_Cat_Assets.zip' -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Project ZIP file was not found."
-            find . -maxdepth 3 -type f -print
+            ZIP_FILE="$(find . -path './.git' -prune -o -type f -iname '*.zip' -print -quit)"
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file was found in the repository."
+            find . -path './.git' -prune -o -type f -print
             exit 1
           fi
+
+          echo "ZIP found: $ZIP_FILE"
 
           mkdir -p extracted
           unzip -o "$ZIP_FILE" -d extracted
@@ -41,8 +49,8 @@ jobs:
           SETTINGS="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)"
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: No Gradle settings file found inside ZIP."
-            find extracted -maxdepth 4 -type f -print
+            echo "ERROR: No Gradle settings file was found inside the ZIP."
+            find extracted -maxdepth 5 -type f -print
             exit 1
           fi
 
@@ -55,16 +63,60 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project found at: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
+
+      - name: Fix missing setContent import
+        shell: bash
+        run: |
+          set -e
+
+          MAIN_FILE="$(find "$PROJECT_DIR/app/src" -type f -name 'MainActivity.kt' -print -quit)"
+
+          if [ -z "$MAIN_FILE" ]; then
+            echo "ERROR: MainActivity.kt was not found."
+            exit 1
+          fi
+
+          echo "Checking: $MAIN_FILE"
+
+          if ! grep -q '^import androidx.activity.compose.setContent$' "$MAIN_FILE"; then
+            python3 - "$MAIN_FILE" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          content = path.read_text(encoding="utf-8")
+          import_line = "import androidx.activity.compose.setContent"
+
+          if import_line not in content.splitlines():
+              lines = content.splitlines()
+              package_index = next(
+                  (i for i, line in enumerate(lines) if line.startswith("package ")),
+                  None
+              )
+
+              if package_index is None:
+                  raise SystemExit("ERROR: Kotlin package declaration was not found.")
+
+              lines.insert(package_index + 1, "")
+              lines.insert(package_index + 2, import_line)
+              path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          print("Added missing setContent import.")
+          PY
+          else
+            echo "setContent import already exists."
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Build debug APK
         shell: bash
         run: |
+          set -e
           cd "$PROJECT_DIR"
 
           if [ -f gradlew ]; then
